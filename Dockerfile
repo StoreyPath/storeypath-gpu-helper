@@ -106,6 +106,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15m \
         else curl -fsS -o /dev/null http://127.0.0.1:8105/health; fi
 LABEL org.opencontainers.image.title="StoreyPath GPU helper" \
       org.opencontainers.image.description="The vision model StoreyPath Studio asks about the plans, served on an NVIDIA GPU (OpenAI-compatible, with a key)" \
-      org.opencontainers.image.source="https://github.com/StoreyPath/storeypath" \
+      org.opencontainers.image.source="https://github.com/StoreyPath/storeypath-studio" \
       org.opencontainers.image.licenses="MIT AND Apache-2.0"
 ENTRYPOINT ["storeypath-helper"]
