@@ -13,13 +13,14 @@
 #                               should match it
 #   STOREYPATH_HELPER_CONTEXT   tokens of context per question (default 8192)
 #   STOREYPATH_HELPER_GPU_MEMORY  vLLM: the GPU memory it is given, in GB (e.g. 44) or
-#                               as a share of the card (e.g. 0.5); default 44 GB, which
-#                               holds about 10 room questions at once (the rest wait their
-#                               turn), and it uses about 2 GB more than this. That much
-#                               must be free when it starts. 52 GB holds all 16 at once;
-#                               below about 41 it does not start with 8192 tokens of
-#                               context. (llama.cpp takes what the model and its slots
-#                               need: not read)
+#                               as a share of the card (e.g. 0.5), or auto; default 44 GB,
+#                               which holds about 10 room questions at once (the rest wait
+#                               their turn), and it uses about 2 GB more than this. That
+#                               much must be free when it starts. 52 GB holds all 16 at
+#                               once; below about 41 it does not start with 8192 tokens of
+#                               context. auto: what is free on the card when it starts,
+#                               less 2 GB, up to 52 (for a GPU others use too). (llama.cpp
+#                               takes what the model and its slots need: not read)
 #   STOREYPATH_HELPER_CERT      HTTPS with this certificate (PEM, its chain after it)
 #   STOREYPATH_HELPER_CERT_KEY  and its private key (PEM); without them, plain HTTP: for
 #                               a trusted network, or behind a proxy that speaks HTTPS
@@ -78,6 +79,23 @@ fi
 # card's memory vLLM is told it may take (--gpu-memory-utilization)
 gpu_share() {
     want="$(echo "$1" | sed 's/[[:space:]]//g; s/[Gg][Ii]\{0,1\}[Bb]\{0,1\}$//')"
+    case "$want" in
+    [Aa][Uu][Tt][Oo])
+        # what is free on the first GPU this container sees, less a margin, up to what
+        # 16 questions at once need: for a GPU others use too
+        free_mib="$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | head -n 1 | tr -dc 0-9)"
+        if [ -z "$free_mib" ]; then
+            echo "STOREYPATH_HELPER_GPU_MEMORY=auto: the GPU's free memory cannot be read (nvidia-smi); give GB, e.g. 44" >&2
+            return 2
+        fi
+        want="$(awk -v f="$free_mib" 'BEGIN { g = f / 1024 - 2; if (g > 52) g = 52; printf "%.1f\n", g }')"
+        if awk -v w="$want" 'BEGIN { exit !(w < 41) }'; then
+            echo "STOREYPATH_HELPER_GPU_MEMORY=auto: only $want GB free to use on this GPU; it needs about 41 (or a smaller STOREYPATH_HELPER_CONTEXT)" >&2
+            return 2
+        fi
+        echo "GPU memory: auto, $want GB (of what is free now)" >&2
+        ;;
+    esac
     case "$want" in
     '' | *[!0-9.]* | *.*.* | .)
         echo "STOREYPATH_HELPER_GPU_MEMORY: GB (e.g. 44) or a share of the card (e.g. 0.5), not $1" >&2

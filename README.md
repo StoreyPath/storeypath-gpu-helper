@@ -95,6 +95,7 @@ starts, or it stops with a message saying how much is. Measured with Studio's qu
 | 48 | 49.6 GB | 13 | 91 |
 | 50 | 51.6 GB | 15–16 | 90 |
 | 52 | 53.6 GB | 16 | 90 |
+| `auto` | what is free on the card when it starts, less 2 GB, up to 52 (52.0 → 51.9 GB used on an empty card) | up to 16 | as above |
 
 On that card the GPU itself was the limit (busy all the time, at its power cap), so more
 questions at once did not read rooms faster; on a faster card more may. A room's question
@@ -122,7 +123,7 @@ Studio's `docker/compose.yml` runs Studio and a helper on one machine.
 |---|---|
 | `STOREYPATH_HELPER_KEY` | the key every call must carry (Studio's `STOREYPATH_VISION_KEY`). Without one the helper does not start, unless `STOREYPATH_HELPER_OPEN=1` (a network nothing else can reach) |
 | `STOREYPATH_HELPER_SLOTS` | questions answered at once (vLLM 16, llama.cpp 2; with llama.cpp each one more needs more GPU memory). Studio's `STOREYPATH_VISION_PARALLEL` should match it |
-| `STOREYPATH_HELPER_GPU_MEMORY` | vLLM: the GPU memory it is given, in GB (`44`) or as a share of the card (`0.5`); default 44 GB, and it uses about 2 GB more. See the table above |
+| `STOREYPATH_HELPER_GPU_MEMORY` | vLLM: the GPU memory it is given, in GB (`44`), as a share of the card (`0.5`), or `auto` (what is free when it starts, less 2 GB, up to 52: for a GPU others use too; it refuses to start with less than about 41); default 44 GB, and it uses about 2 GB more. See the table above |
 | `STOREYPATH_HELPER_CONTEXT` | tokens of context per question (default 8192) |
 | `STOREYPATH_HELPER_CERT`, `STOREYPATH_HELPER_CERT_KEY` | HTTPS with this certificate and key (PEM, mounted into the container, readable by its user, uid 10001); without them plain HTTP, for a trusted network or behind a proxy that speaks HTTPS. Studio checks the certificate (`STOREYPATH_VISION_CA` for your organization's, `STOREYPATH_VISION_INSECURE=1` for a self-signed one on a trusted network) |
 | `STOREYPATH_HELPER_NAME` | the name the model is served under (default `gemma-4-31B-it-FP8` for vLLM, `gemma-4-31B-it-Q4_K_M` for llama.cpp). Studio files answers by it: helpers serving the same model use the same name |
