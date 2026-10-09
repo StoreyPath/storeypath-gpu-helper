@@ -1,0 +1,5 @@
+# build context: only what the image needs
+*
+!start.sh
+!models/vision/gemma-4-31B-it-Q4_K_M.gguf
+!models/vision/mmproj-F16.gguf

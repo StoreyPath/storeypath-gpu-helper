@@ -1,6 +1,0 @@
-# build context for docker/gpu-helper/Dockerfile (built from the repository's root):
-# only what the image needs
-*
-!docker/gpu-helper/start.sh
-!docker/models/vision/gemma-4-31B-it-Q4_K_M.gguf
-!docker/models/vision/mmproj-F16.gguf

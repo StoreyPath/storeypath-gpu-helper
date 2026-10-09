@@ -1,0 +1,3 @@
+# the vision model (./fetch-vision.sh), baked into the image
+models/
+.DS_Store

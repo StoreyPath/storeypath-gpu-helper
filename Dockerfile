@@ -1,11 +1,12 @@
 # StoreyPath's GPU helper: the vision model alone, served on a machine with an NVIDIA
-# GPU. Optional: Studio (docker/Dockerfile, the same image on every machine) works
+# GPU. Optional: StoreyPath Studio (github.com/StoreyPath/storeypath-studio, the same
+# image on every machine) works
 # without it, and with it once told where it is. One Studio can use several helpers
 # (the rooms of a floor spread over them), and several Studios one. No network needed
 # at run time: the model is fetched before the build and baked in.
 #
-#   docker/fetch-vision.sh                                         # once, before building
-#   docker build --platform linux/amd64 -f docker/gpu-helper/Dockerfile -t storeypath/gpu-helper .
+#   ./fetch-vision.sh                                              # once, before building
+#   docker build --platform linux/amd64 -t storeypath/gpu-helper .
 #   docker save storeypath/gpu-helper | gzip -1 > storeypath-gpu-helper.tar.gz
 #
 # On the GPU machine (Linux, Docker and the NVIDIA Container Toolkit, NVIDIA driver 525
@@ -17,7 +18,7 @@
 #
 # and Studio, wherever it runs: -e STOREYPATH_VISION_URL=http://<gpu machine>:8105/v1
 # -e STOREYPATH_VISION_KEY=<the same key> (several helpers: their addresses separated
-# by commas). docker/compose.yml runs both on one machine.
+# by commas). Studio's docker/compose.yml runs both on one machine.
 #
 # It serves the OpenAI-compatible API (llama.cpp's llama-server) on port 8105, every
 # call but /health needing the key: it does not start without STOREYPATH_HELPER_KEY
@@ -26,7 +27,7 @@
 # STOREYPATH_HELPER_CERT_KEY to the files inside (Studio checks it: STOREYPATH_VISION_CA
 # for one your organization made, STOREYPATH_VISION_INSECURE=1 for a self-signed one on
 # a trusted network). Else keep it on a trusted network, or behind a proxy that speaks
-# HTTPS. Its settings (slots, context, the model's name): docker/gpu-helper/start.sh.
+# HTTPS. Its settings (slots, context, the model's name): start.sh.
 # Choose the card with --gpus '"device=1"'; one with 32 GB free is enough.
 #
 # The engine is llama.cpp. vLLM may replace it, as measurements on the GPU machines
@@ -82,8 +83,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 libssl
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --create-home --home-dir /home/helper helper
 COPY --from=llama /opt/llama /opt/llama
-COPY docker/models/vision/gemma-4-31B-it-Q4_K_M.gguf docker/models/vision/mmproj-F16.gguf /opt/storeypath/vision/
-COPY docker/gpu-helper/start.sh /usr/local/bin/storeypath-helper
+COPY models/vision/gemma-4-31B-it-Q4_K_M.gguf models/vision/mmproj-F16.gguf /opt/storeypath/vision/
+COPY start.sh /usr/local/bin/storeypath-helper
 RUN mkdir -p /usr/share/storeypath/licenses \
     && cp /opt/llama/LICENSE /usr/share/storeypath/licenses/LICENSE-llama.cpp.txt \
     && cp /opt/llama/CUDA-NOTICE.txt /usr/share/storeypath/licenses/ \
@@ -106,6 +107,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15m \
         else curl -fsS -o /dev/null http://127.0.0.1:8105/health; fi
 LABEL org.opencontainers.image.title="StoreyPath GPU helper" \
       org.opencontainers.image.description="The vision model StoreyPath Studio asks about the plans, served on an NVIDIA GPU (OpenAI-compatible, with a key)" \
-      org.opencontainers.image.source="https://github.com/StoreyPath/storeypath-studio" \
+      org.opencontainers.image.source="https://github.com/StoreyPath/storeypath-gpu-helper" \
       org.opencontainers.image.licenses="MIT AND Apache-2.0"
 ENTRYPOINT ["storeypath-helper"]

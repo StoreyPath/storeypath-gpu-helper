@@ -1,8 +1,8 @@
 #!/bin/sh
-# Download the vision model baked into the GPU helper (docker/gpu-helper/Dockerfile):
+# Download the vision model baked into the GPU helper (Dockerfile):
 # Gemma 4 31B, 4-bit (about 18 GB), and its image encoder (about 1 GB).
 #
-# Files land in docker/models/vision/ (git-ignored). Building the image needs them
+# Files land in models/vision/ (git-ignored). Building the image needs them
 # there; running it needs no network at all. Downloaded files are kept, and checked
 # against the checksums below.
 set -eu
