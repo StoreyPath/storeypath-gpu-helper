@@ -4,10 +4,11 @@
 # and llama.cpp (Dockerfile: older drivers, less memory). Arguments are passed on to
 # the engine (vllm serve, llama-server) as they are.
 #
-#   STOREYPATH_HELPER_KEY       the key every call must carry (Studio sends it: its
-#                               STOREYPATH_VISION_KEY). Without one the helper does not
-#                               start, unless STOREYPATH_HELPER_OPEN=1 (a network
-#                               nothing else can reach)
+#   STOREYPATH_HELPER_KEY       the key every call but /health must carry (Studio sends
+#                               it: its STOREYPATH_VISION_KEY), at least 32 characters
+#                               (openssl rand -hex 32 makes one). Without one the helper
+#                               does not start, unless STOREYPATH_HELPER_OPEN=1 (a
+#                               network nothing else can reach)
 #   STOREYPATH_HELPER_SLOTS     questions answered at once (default 16 with vLLM, 2
 #                               with llama.cpp); Studio's STOREYPATH_VISION_PARALLEL
 #                               should match it
@@ -22,8 +23,15 @@
 #                               less 2 GB, up to 52 (for a GPU others use too). (llama.cpp
 #                               takes what the model and its slots need: not read)
 #   STOREYPATH_HELPER_CERT      HTTPS with this certificate (PEM, its chain after it)
-#   STOREYPATH_HELPER_CERT_KEY  and its private key (PEM); without them, plain HTTP: for
-#                               a trusted network, or behind a proxy that speaks HTTPS
+#   STOREYPATH_HELPER_CERT_KEY  and its private key (PEM): e.g. one from your
+#                               organisation's CA, which Studio can check
+#                               (STOREYPATH_VISION_CA). Without them the helper still
+#                               speaks HTTPS, with a self-signed certificate it makes as
+#                               it starts (its SHA-256 fingerprint in the log): the
+#                               traffic and the key are encrypted, but Studio cannot
+#                               check who it is talking to (README.md, Security)
+#   STOREYPATH_HELPER_PLAIN_HTTP  1: plain HTTP, no certificate (for an SSH tunnel, or
+#                               a proxy in front that speaks HTTPS)
 #   STOREYPATH_HELPER_NAME      the name the model is served under (default: the model
 #                               file's or folder's, e.g. gemma-4-31B-it-Q4_K_M or
 #                               gemma-4-31B-it-FP8). Studio files each answer by it:
@@ -61,19 +69,67 @@ cert="${STOREYPATH_HELPER_CERT:-}"
 cert_key="${STOREYPATH_HELPER_CERT_KEY:-}"
 unset STOREYPATH_HELPER_KEY
 
-if [ -z "$key" ] && [ "${STOREYPATH_HELPER_OPEN:-}" != 1 ]; then
-    echo "no STOREYPATH_HELPER_KEY: give the helper a key, the one Studio sends as STOREYPATH_VISION_KEY" >&2
-    echo "(e.g. -e STOREYPATH_HELPER_KEY=\$(openssl rand -hex 32)), or STOREYPATH_HELPER_OPEN=1 to serve without one" >&2
-    exit 2
+plain="${STOREYPATH_HELPER_PLAIN_HTTP:-}"
+
+if [ "${STOREYPATH_HELPER_OPEN:-}" != 1 ]; then
+    if [ -z "$key" ]; then
+        echo "no STOREYPATH_HELPER_KEY: give the helper a key, the one Studio sends as STOREYPATH_VISION_KEY" >&2
+        echo "(make one with: openssl rand -hex 32), or STOREYPATH_HELPER_OPEN=1 to serve without one" >&2
+        exit 2
+    fi
+    if [ "${#key}" -lt 32 ]; then
+        echo "STOREYPATH_HELPER_KEY is too short (${#key} characters): it must be at least 32" >&2
+        echo "(make one with: openssl rand -hex 32, and give Studio the same as STOREYPATH_VISION_KEY)" >&2
+        exit 2
+    fi
 fi
-scheme=http
+case "$plain" in
+'' | 0) plain= ;;
+1) ;;
+*)
+    echo "STOREYPATH_HELPER_PLAIN_HTTP: 1 (plain HTTP) or nothing (HTTPS), not $plain" >&2
+    exit 2
+    ;;
+esac
 if [ -n "$cert$cert_key" ]; then
+    if [ -n "$plain" ]; then
+        echo "STOREYPATH_HELPER_PLAIN_HTTP=1 and a certificate (STOREYPATH_HELPER_CERT): one or the other" >&2
+        exit 2
+    fi
     if [ ! -r "$cert" ] || [ ! -r "$cert_key" ]; then
         echo "STOREYPATH_HELPER_CERT and STOREYPATH_HELPER_CERT_KEY: both must name readable PEM files" >&2
         exit 2
     fi
-    scheme=https
+elif [ -z "$plain" ]; then
+    # no certificate given: one of its own, made now (self-signed, EC P-256, ten years),
+    # in a folder only this user reads. It encrypts; Studio cannot check it (README.md)
+    tls="$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/storeypath-helper-tls.XXXXXX")" || {
+        echo "no writable temporary folder (${TMPDIR:-/tmp}) for the helper's own certificate: give TMPDIR one," \
+             "or STOREYPATH_HELPER_CERT and STOREYPATH_HELPER_CERT_KEY, or STOREYPATH_HELPER_PLAIN_HTTP=1" >&2
+        exit 2
+    }
+    cert="$tls/cert.pem"
+    cert_key="$tls/key.pem"
+    if ! (umask 077 && openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
+            -subj "/CN=storeypath-gpu-helper" -keyout "$cert_key" -out "$cert" >/dev/null 2>&1); then
+        echo "the helper's own certificate could not be made (openssl): give STOREYPATH_HELPER_CERT and" \
+             "STOREYPATH_HELPER_CERT_KEY, or STOREYPATH_HELPER_PLAIN_HTTP=1" >&2
+        exit 2
+    fi
+    fingerprint="$(openssl x509 -in "$cert" -noout -fingerprint -sha256 | sed 's/^.*=//')"
+    echo "HTTPS with a certificate of its own, made now (self-signed, for ten years): SHA-256 $fingerprint." \
+         "Calls and the key are encrypted, but Studio cannot check it is this helper it talks to: for that, give" \
+         "the helper a certificate from your organisation's CA (STOREYPATH_HELPER_CERT, _CERT_KEY) and Studio" \
+         "the CA (STOREYPATH_VISION_CA)"
 fi
+scheme=https
+if [ -n "$plain" ]; then
+    scheme=http
+    echo "plain HTTP (STOREYPATH_HELPER_PLAIN_HTTP=1): calls and the key cross the network as they are; for an SSH" \
+         "tunnel, or a proxy in front that speaks HTTPS"
+fi
+# for Docker's health check (the Dockerfiles): which scheme /health is asked on
+echo "$scheme" > "${TMPDIR:-/tmp}/storeypath-helper.scheme" 2>/dev/null || true
 
 # vLLM: STOREYPATH_HELPER_GPU_MEMORY (GB, or a share of the card) as the share of the
 # card's memory vLLM is told it may take (--gpu-memory-utilization)
@@ -127,7 +183,7 @@ case "$engine" in
 llama.cpp)
     echo "serving $name ($engine) at $scheme://<this machine>:$port/v1: $slots question(s) at once, $context tokens each," \
          "$(if [ -n "$key" ]; then echo "a key needed"; else echo "OPEN: no key needed"; fi)"
-    if [ -n "$cert" ]; then
+    if [ "$scheme" = https ]; then
         set -- --ssl-cert-file "$cert" --ssl-key-file "$cert_key" "$@"
     fi
     # the key from the environment, not the command line (which the host's ps shows)
@@ -146,7 +202,7 @@ vllm)
     echo "serving $name ($engine) at $scheme://<this machine>:$port/v1: $slots question(s) at once, $context tokens each," \
          "GPU memory $memory (share $share)," \
          "$(if [ -n "$key" ]; then echo "a key needed"; else echo "OPEN: no key needed"; fi)"
-    if [ -n "$cert" ]; then
+    if [ "$scheme" = https ]; then
         set -- --ssl-certfile "$cert" --ssl-keyfile "$cert_key" "$@"
     fi
     if [ -n "${STOREYPATH_HELPER_IMAGE_KWARGS:-}" ] && [ "$STOREYPATH_HELPER_IMAGE_KWARGS" != "{}" ]; then

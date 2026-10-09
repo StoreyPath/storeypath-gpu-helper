@@ -14,20 +14,20 @@
 #
 #   docker load -i storeypath-gpu-helper.tar.gz
 #   docker run -d --name storeypath-gpu --gpus all -p 8105:8105 \
-#       -e STOREYPATH_HELPER_KEY=<a long random key> storeypath/gpu-helper
+#       -e STOREYPATH_HELPER_KEY=<at least 32 characters: openssl rand -hex 32> storeypath/gpu-helper
 #
-# and Studio, wherever it runs: -e STOREYPATH_VISION_URL=http://<gpu machine>:8105/v1
+# and Studio, wherever it runs: -e STOREYPATH_VISION_URL=https://<gpu machine>:8105/v1
 # -e STOREYPATH_VISION_KEY=<the same key> (several helpers: their addresses separated
 # by commas). Studio's docker/compose.yml runs both on one machine.
 #
 # It serves the OpenAI-compatible API (llama.cpp's llama-server) on port 8105, every
 # call but /health needing the key: it does not start without STOREYPATH_HELPER_KEY
 # (or with STOREYPATH_HELPER_OPEN=1, for a network nothing else can reach). It speaks
-# plain HTTP unless given a certificate: mount it and set STOREYPATH_HELPER_CERT and
-# STOREYPATH_HELPER_CERT_KEY to the files inside (Studio checks it: STOREYPATH_VISION_CA
-# for one your organization made, STOREYPATH_VISION_INSECURE=1 for a self-signed one on
-# a trusted network). Else keep it on a trusted network, or behind a proxy that speaks
-# HTTPS. Its settings (slots, context, the model's name): start.sh.
+# HTTPS: with a certificate it makes as it starts, unless given one (mount it and set
+# STOREYPATH_HELPER_CERT and STOREYPATH_HELPER_CERT_KEY to the files inside), or plain
+# HTTP with STOREYPATH_HELPER_PLAIN_HTTP=1 (an SSH tunnel, a proxy that speaks HTTPS).
+# What that protects and what not: README.md, Security. Its settings (slots, context,
+# the model's name): start.sh.
 # Choose the card with --gpus '"device=1"'; one with 32 GB free is enough.
 #
 # The engine is llama.cpp: for drivers too old for vLLM's CUDA, and GPUs with less
@@ -77,8 +77,8 @@ RUN mkdir -p /opt/llama \
 
 # ---- the image -------------------------------------------------------------------------
 FROM ubuntu:${UBUNTU}
-# curl for the health check alone
-RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 libssl3t64 curl ca-certificates \
+# curl for the health check alone; openssl for the certificate start.sh makes when given none
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 libssl3t64 openssl curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --create-home --home-dir /home/helper helper
 COPY --from=llama /opt/llama /opt/llama
@@ -100,10 +100,12 @@ ENV PATH="/opt/llama:${PATH}" \
 
 USER helper
 EXPOSE 8105
-# /health needs no key; 503 while the model loads (a minute or two), then 200
+# /health needs no key; 503 while the model loads (a minute or two), then 200. Asked on
+# the scheme start.sh served (it notes it in a file), else on HTTPS then HTTP
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15m \
-    CMD if [ -n "${STOREYPATH_HELPER_CERT:-}" ]; then curl -fsSk -o /dev/null https://127.0.0.1:8105/health; \
-        else curl -fsS -o /dev/null http://127.0.0.1:8105/health; fi
+    CMD scheme="$(cat "${TMPDIR:-/tmp}/storeypath-helper.scheme" 2>/dev/null)"; \
+        if [ -n "$scheme" ]; then curl -fsSk -m 4 -o /dev/null "$scheme://127.0.0.1:8105/health"; \
+        else curl -fsk -m 2 -o /dev/null https://127.0.0.1:8105/health || curl -fsS -m 2 -o /dev/null http://127.0.0.1:8105/health; fi
 LABEL org.opencontainers.image.title="StoreyPath GPU helper" \
       org.opencontainers.image.description="The vision model StoreyPath Studio asks about the plans, served on an NVIDIA GPU (OpenAI-compatible, with a key)" \
       org.opencontainers.image.source="https://github.com/StoreyPath/storeypath-gpu-helper" \

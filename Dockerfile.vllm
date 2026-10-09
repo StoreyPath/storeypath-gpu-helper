@@ -2,7 +2,8 @@
 # an NVIDIA GPU by vLLM, the faster of the helper's two engines (the other, llama.cpp,
 # is the Dockerfile beside this one: for older drivers and less memory). The same
 # contract: the OpenAI-compatible API on port 8105, every call but /health needing the
-# key, HTTPS when given a certificate, the model baked in and no network at run time.
+# key, HTTPS (with a certificate of its own unless given one), the model baked in and
+# no network at run time.
 #
 #   ./fetch-vision.sh fp8                                          # once, before building
 #   docker build --platform linux/amd64 -f Dockerfile.vllm -t storeypath/gpu-helper:vllm .
@@ -15,9 +16,9 @@
 #
 #   docker load -i storeypath-gpu-helper-vllm.tar.gz
 #   docker run -d --name storeypath-gpu --gpus '"device=0"' -p 8105:8105 \
-#       -e STOREYPATH_HELPER_KEY=<a long random key> storeypath/gpu-helper:vllm
+#       -e STOREYPATH_HELPER_KEY=<at least 32 characters: openssl rand -hex 32> storeypath/gpu-helper:vllm
 #
-# and Studio: STOREYPATH_VISION_URL=http://<gpu machine>:8105/v1, STOREYPATH_VISION_KEY=
+# and Studio: STOREYPATH_VISION_URL=https://<gpu machine>:8105/v1, STOREYPATH_VISION_KEY=
 # <the same key>, STOREYPATH_VISION_PARALLEL=16 (the helper's slots). Its settings
 # (slots, GPU memory, context, the model's name, HTTPS): start.sh.
 #
@@ -96,10 +97,12 @@ USER helper
 WORKDIR /home/helper
 EXPOSE 8105
 # /health needs no key; nothing answers while the model loads and compiles (three or
-# four minutes), then 200
+# four minutes), then 200. Asked on the scheme start.sh served (it notes it in a file),
+# else on HTTPS then HTTP
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15m \
-    CMD if [ -n "${STOREYPATH_HELPER_CERT:-}" ]; then curl -fsSk -o /dev/null https://127.0.0.1:8105/health; \
-        else curl -fsS -o /dev/null http://127.0.0.1:8105/health; fi
+    CMD scheme="$(cat "${TMPDIR:-/tmp}/storeypath-helper.scheme" 2>/dev/null)"; \
+        if [ -n "$scheme" ]; then curl -fsSk -m 4 -o /dev/null "$scheme://127.0.0.1:8105/health"; \
+        else curl -fsk -m 2 -o /dev/null https://127.0.0.1:8105/health || curl -fsS -m 2 -o /dev/null http://127.0.0.1:8105/health; fi
 LABEL org.opencontainers.image.title="StoreyPath GPU helper (vLLM)" \
       org.opencontainers.image.description="The vision model StoreyPath Studio asks about the plans, served by vLLM on an NVIDIA GPU (OpenAI-compatible, with a key)" \
       org.opencontainers.image.source="https://github.com/StoreyPath/storeypath-gpu-helper" \
