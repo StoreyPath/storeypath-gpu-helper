@@ -30,12 +30,11 @@
 # HTTPS. Its settings (slots, context, the model's name): start.sh.
 # Choose the card with --gpus '"device=1"'; one with 32 GB free is enough.
 #
-# The engine is llama.cpp. vLLM may replace it, as measurements on the GPU machines
-# decide: start.sh has its place (STOREYPATH_HELPER_ENGINE=vllm), and its image would
-# be built FROM vllm/vllm-openai, with the model in vLLM's own format (it does not read
-# this GGUF with its image encoder), the same start.sh, port, key and health check.
-# Studio files answers by the model's name, so a different model needs its own
-# STOREYPATH_HELPER_NAME.
+# The engine is llama.cpp: for drivers too old for vLLM's CUDA, and GPUs with less
+# memory free. The vLLM build (Dockerfile.vllm: the model in 8-bit FP8, the same
+# start.sh, port, key and health check) reads rooms two to four times faster and is the
+# one to take where the driver allows (README.md). Studio files answers by the model's
+# name: the two serve theirs under different names.
 #
 # Inside: llama.cpp's llama-server built for CUDA (MIT), with OpenSSL (Apache-2.0) for
 # HTTPS and NVIDIA's CUDA runtime and cuBLAS (CUDA Toolkit EULA, redistributable);

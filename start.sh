@@ -1,38 +1,63 @@
 #!/bin/sh
 # StoreyPath's GPU helper: the vision model server, OpenAI-compatible, on port 8105.
-# Arguments are passed on to the engine (llama-server) as they are.
+# Two builds, one engine each: vLLM (Dockerfile.vllm: faster, a newer NVIDIA driver)
+# and llama.cpp (Dockerfile: older drivers, less memory). Arguments are passed on to
+# the engine (vllm serve, llama-server) as they are.
 #
 #   STOREYPATH_HELPER_KEY       the key every call must carry (Studio sends it: its
 #                               STOREYPATH_VISION_KEY). Without one the helper does not
 #                               start, unless STOREYPATH_HELPER_OPEN=1 (a network
 #                               nothing else can reach)
-#   STOREYPATH_HELPER_SLOTS     questions answered at once (default 2); Studio's
-#                               STOREYPATH_VISION_PARALLEL should match it
+#   STOREYPATH_HELPER_SLOTS     questions answered at once (default 16 with vLLM, 2
+#                               with llama.cpp); Studio's STOREYPATH_VISION_PARALLEL
+#                               should match it
 #   STOREYPATH_HELPER_CONTEXT   tokens of context per question (default 8192)
+#   STOREYPATH_HELPER_GPU_MEMORY  vLLM: the GPU memory it is given, in GB (e.g. 44) or
+#                               as a share of the card (e.g. 0.5); default 44 GB, which
+#                               holds about 10 room questions at once (the rest wait their
+#                               turn), and it uses about 2 GB more than this. That much
+#                               must be free when it starts. 52 GB holds all 16 at once;
+#                               below about 41 it does not start with 8192 tokens of
+#                               context. (llama.cpp takes what the model and its slots
+#                               need: not read)
 #   STOREYPATH_HELPER_CERT      HTTPS with this certificate (PEM, its chain after it)
 #   STOREYPATH_HELPER_CERT_KEY  and its private key (PEM); without them, plain HTTP: for
 #                               a trusted network, or behind a proxy that speaks HTTPS
 #   STOREYPATH_HELPER_NAME      the name the model is served under (default: the model
-#                               file's, gemma-4-31B-it-Q4_K_M). Studio files each answer
-#                               by it: helpers serving the same model use the same name
-#   STOREYPATH_HELPER_MODEL, STOREYPATH_HELPER_MMPROJ
-#                               the model and its image encoder (the image sets both)
-#   STOREYPATH_HELPER_ENGINE    llama.cpp (the default, in this image); vllm: where vLLM
-#                               would go, if measurements choose it (see the Dockerfile)
+#                               file's or folder's, e.g. gemma-4-31B-it-Q4_K_M or
+#                               gemma-4-31B-it-FP8). Studio files each answer by it:
+#                               helpers serving the same model use the same name
+#   STOREYPATH_HELPER_MODEL     the model: a GGUF file (llama.cpp) or a folder in
+#                               Hugging Face's format (vLLM); the image sets it
+#   STOREYPATH_HELPER_MMPROJ    llama.cpp: the model's image encoder (the image sets it)
+#   STOREYPATH_HELPER_IMAGE_KWARGS  vLLM: how the model's image processor reads a
+#                               picture, as JSON (the image sets {"max_soft_tokens":
+#                               1120} for Gemma 4: up to 1120 tokens a picture, as
+#                               llama.cpp's --image-min-tokens 1024; its own default,
+#                               280, is coarse for a plan)
+#   STOREYPATH_HELPER_ENGINE    llama.cpp (the default) or vllm: the image sets it
 #
-# One GPU with 32 GB free runs the model with two questions at once (each one more
-# needs more memory). It takes a minute or two to load: /health answers 200 once it
-# has (503 while loading), and Studio leaves the helper out until then.
+# It takes a minute or two to load (vLLM: three or four, compiling for the GPU): /health
+# answers 200 once it has (llama.cpp: 503 while loading; vLLM: no answer), and Studio
+# leaves the helper out until then.
 set -eu
 port=8105
-slots="${STOREYPATH_HELPER_SLOTS:-2}"
+engine="${STOREYPATH_HELPER_ENGINE:-llama.cpp}"
+case "$engine" in
+llama.cpp) default_slots=2 ;;
+vllm) default_slots=16 ;;
+*)
+    echo "STOREYPATH_HELPER_ENGINE: llama.cpp or vllm, not $engine" >&2
+    exit 2
+    ;;
+esac
+slots="${STOREYPATH_HELPER_SLOTS:-$default_slots}"
 context="${STOREYPATH_HELPER_CONTEXT:-8192}"
 key="${STOREYPATH_HELPER_KEY:-}"
 model="${STOREYPATH_HELPER_MODEL:?STOREYPATH_HELPER_MODEL: the model to serve}"
 name="${STOREYPATH_HELPER_NAME:-$(basename "$model" .gguf)}"
 cert="${STOREYPATH_HELPER_CERT:-}"
 cert_key="${STOREYPATH_HELPER_CERT_KEY:-}"
-engine="${STOREYPATH_HELPER_ENGINE:-llama.cpp}"
 unset STOREYPATH_HELPER_KEY
 
 if [ -z "$key" ] && [ "${STOREYPATH_HELPER_OPEN:-}" != 1 ]; then
@@ -48,11 +73,42 @@ if [ -n "$cert$cert_key" ]; then
     fi
     scheme=https
 fi
-echo "serving $name ($engine) at $scheme://<this machine>:$port/v1: $slots question(s) at once, $context tokens each," \
-     "$(if [ -n "$key" ]; then echo "a key needed"; else echo "OPEN: no key needed"; fi)"
+
+# vLLM: STOREYPATH_HELPER_GPU_MEMORY (GB, or a share of the card) as the share of the
+# card's memory vLLM is told it may take (--gpu-memory-utilization)
+gpu_share() {
+    want="$(echo "$1" | sed 's/[[:space:]]//g; s/[Gg][Ii]\{0,1\}[Bb]\{0,1\}$//')"
+    case "$want" in
+    '' | *[!0-9.]* | *.*.* | .)
+        echo "STOREYPATH_HELPER_GPU_MEMORY: GB (e.g. 44) or a share of the card (e.g. 0.5), not $1" >&2
+        return 2
+        ;;
+    esac
+    if awk -v w="$want" 'BEGIN { exit !(w <= 0) }'; then
+        echo "STOREYPATH_HELPER_GPU_MEMORY: more than nothing, not $1" >&2
+        return 2
+    fi
+    if awk -v w="$want" 'BEGIN { exit !(w <= 1) }'; then
+        echo "$want"
+        return 0
+    fi
+    # GB: of the first GPU this container sees (choose it with --gpus)
+    total_mib="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -n 1 | tr -dc 0-9)"
+    if [ -z "$total_mib" ]; then
+        echo "STOREYPATH_HELPER_GPU_MEMORY=$1: the GPU's memory cannot be read (nvidia-smi); give a share of the card instead, e.g. 0.5" >&2
+        return 2
+    fi
+    awk -v w="$want" -v t="$total_mib" -v given="$1" 'BEGIN {
+        s = w * 1024 / t
+        if (s > 1) { printf "STOREYPATH_HELPER_GPU_MEMORY=%s: more than the GPU has (%.1f GB)\n", given, t / 1024 > "/dev/stderr"; exit 2 }
+        printf "%.4f\n", s
+    }'
+}
 
 case "$engine" in
 llama.cpp)
+    echo "serving $name ($engine) at $scheme://<this machine>:$port/v1: $slots question(s) at once, $context tokens each," \
+         "$(if [ -n "$key" ]; then echo "a key needed"; else echo "OPEN: no key needed"; fi)"
     if [ -n "$cert" ]; then
         set -- --ssl-cert-file "$cert" --ssl-key-file "$cert_key" "$@"
     fi
@@ -67,21 +123,26 @@ llama.cpp)
         --image-min-tokens 1024 --jinja --no-webui --no-slots "$@"
     ;;
 vllm)
-    # vLLM's place, for an image built FROM vllm/vllm-openai with the model in vLLM's
-    # own format (a folder of safetensors; vLLM does not read this GGUF and its
-    # encoder) and STOREYPATH_HELPER_NAME set: a different model, a different name.
+    memory="${STOREYPATH_HELPER_GPU_MEMORY:-44}"
+    share="$(gpu_share "$memory")" || exit 2
+    echo "serving $name ($engine) at $scheme://<this machine>:$port/v1: $slots question(s) at once, $context tokens each," \
+         "GPU memory $memory (share $share)," \
+         "$(if [ -n "$key" ]; then echo "a key needed"; else echo "OPEN: no key needed"; fi)"
     if [ -n "$cert" ]; then
         set -- --ssl-certfile "$cert" --ssl-keyfile "$cert_key" "$@"
     fi
+    if [ -n "${STOREYPATH_HELPER_IMAGE_KWARGS:-}" ] && [ "$STOREYPATH_HELPER_IMAGE_KWARGS" != "{}" ]; then
+        set -- --mm-processor-kwargs "$STOREYPATH_HELPER_IMAGE_KWARGS" "$@"
+    fi
+    # the key from the environment, not the command line (which the host's ps shows):
+    # vLLM's own check (on /v1/...) and storeypath_key_guard (on everything but /health)
     if [ -n "$key" ]; then
         VLLM_API_KEY="$key"
         export VLLM_API_KEY
+        set -- --middleware storeypath_key_guard.KeyGuard "$@"
     fi
     exec vllm serve "$model" --served-model-name "$name" --host 0.0.0.0 --port "$port" \
-        --max-num-seqs "$slots" --max-model-len "$context" "$@"
-    ;;
-*)
-    echo "STOREYPATH_HELPER_ENGINE: llama.cpp or vllm, not $engine" >&2
-    exit 2
+        --max-num-seqs "$slots" --max-model-len "$context" --gpu-memory-utilization "$share" \
+        --limit-mm-per-prompt '{"image": 1, "video": 0}' "$@"
     ;;
 esac

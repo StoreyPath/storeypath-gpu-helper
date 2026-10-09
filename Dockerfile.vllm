@@ -1,0 +1,111 @@
+# StoreyPath's GPU helper, vLLM build: the vision model alone, served on a machine with
+# an NVIDIA GPU by vLLM, the faster of the helper's two engines (the other, llama.cpp,
+# is the Dockerfile beside this one: for older drivers and less memory). The same
+# contract: the OpenAI-compatible API on port 8105, every call but /health needing the
+# key, HTTPS when given a certificate, the model baked in and no network at run time.
+#
+#   ./fetch-vision.sh fp8                                          # once, before building
+#   docker build --platform linux/amd64 -f Dockerfile.vllm -t storeypath/gpu-helper:vllm .
+#   docker save storeypath/gpu-helper:vllm | gzip -1 > storeypath-gpu-helper-vllm.tar.gz
+#
+# On the GPU machine (Linux, Docker and the NVIDIA Container Toolkit; an NVIDIA driver
+# 575 or newer, or on a data-center GPU such as an A100 or H100 also the 535, 550, 560,
+# 565 and 570 branches; one GPU, compute capability 8.0 or newer, with about 46 GB free:
+# STOREYPATH_HELPER_GPU_MEMORY, 44 GB by default, and some 2 GB vLLM takes beyond it):
+#
+#   docker load -i storeypath-gpu-helper-vllm.tar.gz
+#   docker run -d --name storeypath-gpu --gpus '"device=0"' -p 8105:8105 \
+#       -e STOREYPATH_HELPER_KEY=<a long random key> storeypath/gpu-helper:vllm
+#
+# and Studio: STOREYPATH_VISION_URL=http://<gpu machine>:8105/v1, STOREYPATH_VISION_KEY=
+# <the same key>, STOREYPATH_VISION_PARALLEL=16 (the helper's slots). Its settings
+# (slots, GPU memory, context, the model's name, HTTPS): start.sh.
+#
+# vLLM's image, pinned: vLLM 0.31.0 with PyTorch 2.13 for CUDA 12.9 (its "cu129" build:
+# the plain v0.31.0 tag is CUDA 13.0 and needs driver 580). Its CUDA forward-compatibility
+# libraries stay in: on a data-center GPU whose driver is older than CUDA 12.9's (575),
+# the NVIDIA Container Toolkit puts them to use. torchcodec (video decoding, built for
+# CUDA 13, whose library does not load here) is taken out: still images do not need it.
+#
+# The model, from models/vllm/<MODEL>/ (./fetch-vision.sh fp8): Gemma 4 31B, FP8
+# (RedHatAI/gemma-4-31B-it-FP8-dynamic), served as gemma-4-31B-it-FP8; or, with
+# --build-arg MODEL=Qwen3.5-27B-FP8 --build-arg IMAGE_KWARGS={} (./fetch-vision.sh
+# qwen-fp8), Qwen 3.5 27B, FP8, served as Qwen3.5-27B-FP8. Studio files answers by the
+# model's name: a different model is asked every room again.
+#
+# Inside: vLLM (Apache-2.0), PyTorch (BSD-3-Clause), the other Python packages vLLM's
+# image carries (each with its licence), NVIDIA's CUDA libraries (NVIDIA Deep Learning
+# Container License, as vLLM's image ships them) and the model's weights (Apache-2.0).
+# Licences: /usr/share/storeypath/licenses. SymPoint-V2 is never in this image.
+
+ARG VLLM_IMAGE=vllm/vllm-openai:v0.31.0-cu129@sha256:ff29e51a9457f191deb332b96fa6440584fa941aa2a548449b604e2b1e5e1eeb
+FROM ${VLLM_IMAGE}
+# the folder under models/vllm/ (fetch-vision.sh), which is also the served name
+ARG MODEL=gemma-4-31B-it-FP8
+# how its image processor reads a picture (JSON; {} for the model's own default): Gemma 4
+# with up to 1120 tokens a picture, as measured (its default, 280, is coarse for a plan)
+ARG IMAGE_KWARGS='{"max_soft_tokens":1120}'
+
+# the model first: the largest layer, kept in the build cache while what follows changes
+COPY models/vllm/${MODEL}/ /opt/storeypath/vision/${MODEL}/
+
+RUN PIP_ROOT_USER_ACTION=ignore python3 -m pip uninstall -y -q torchcodec \
+    && useradd --system --uid 10001 --create-home --home-dir /home/helper helper \
+    && L=/usr/share/storeypath/licenses && mkdir -p "$L" \
+    && P=/usr/local/lib/python3.12/dist-packages \
+    && cp "$P"/vllm-*.dist-info/licenses/LICENSE "$L/LICENSE-vllm.txt" \
+    && cp "$P"/torch-*.dist-info/licenses/LICENSE "$L/LICENSE-pytorch.txt" \
+    && cp /NGC-DL-CONTAINER-LICENSE "$L/LICENSE-NVIDIA-deep-learning-container.txt" \
+    && case "$MODEL" in \
+       gemma-4-*) printf '%s\n' 'Gemma 4 model weights: Apache License 2.0, Google (https://ai.google.dev/gemma/docs/gemma_4_license).' \
+                      'FP8 quantization: Red Hat, Apache License 2.0 (https://huggingface.co/RedHatAI/gemma-4-31B-it-FP8-dynamic).' ;; \
+       Qwen3.5-*) printf '%s\n' 'Qwen 3.5 model weights: Apache License 2.0, the Qwen team, Alibaba Cloud (https://huggingface.co/Qwen/Qwen3.5-27B-FP8).' ;; \
+       *) printf '%s\n' "The model's licence: its card, /opt/storeypath/vision/$MODEL/README.md" ;; \
+       esac > "$L/LICENSE-vision-model.txt" \
+    && if [ -f "/opt/storeypath/vision/$MODEL/LICENSE" ]; then cp "/opt/storeypath/vision/$MODEL/LICENSE" "$L/LICENSE-vision-model-full.txt"; fi
+# the Python packages vLLM's image carries, each with its version and licence
+RUN python3 - > /usr/share/storeypath/licenses/python-packages.txt <<'EOF'
+import importlib.metadata as m
+print("Python packages in this image, their versions and licences; the full texts are in")
+print("their dist-info folders under /usr/local/lib/python3.12/dist-packages.\n")
+rows = set()
+for d in m.distributions():
+    lic = d.metadata.get("License-Expression") or (d.metadata.get("License") or "").split("\n")[0][:80]
+    rows.add((d.metadata["Name"] or "?", d.version, lic or "see its dist-info"))
+for name, version, lic in sorted(rows, key=lambda r: r[0].lower()):
+    print(f"{name} {version}: {lic}")
+EOF
+
+COPY storeypath_key_guard.py /opt/storeypath/python/
+COPY start.sh /usr/local/bin/storeypath-helper
+
+ENV STOREYPATH_HELPER_ENGINE=vllm \
+    STOREYPATH_HELPER_MODEL=/opt/storeypath/vision/${MODEL} \
+    STOREYPATH_HELPER_IMAGE_KWARGS="${IMAGE_KWARGS}" \
+    PYTHONPATH=/opt/storeypath/python \
+    HOME=/home/helper \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_DATASETS_OFFLINE=1 \
+    VLLM_NO_USAGE_STATS=1 \
+    DO_NOT_TRACK=1 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+USER helper
+WORKDIR /home/helper
+EXPOSE 8105
+# /health needs no key; nothing answers while the model loads and compiles (three or
+# four minutes), then 200
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15m \
+    CMD if [ -n "${STOREYPATH_HELPER_CERT:-}" ]; then curl -fsSk -o /dev/null https://127.0.0.1:8105/health; \
+        else curl -fsS -o /dev/null http://127.0.0.1:8105/health; fi
+LABEL org.opencontainers.image.title="StoreyPath GPU helper (vLLM)" \
+      org.opencontainers.image.description="The vision model StoreyPath Studio asks about the plans, served by vLLM on an NVIDIA GPU (OpenAI-compatible, with a key)" \
+      org.opencontainers.image.source="https://github.com/StoreyPath/storeypath-gpu-helper" \
+      org.opencontainers.image.licenses="Apache-2.0 AND BSD-3-Clause AND LicenseRef-NVIDIA-Deep-Learning-Container-License" \
+      org.opencontainers.image.base.name="docker.io/vllm/vllm-openai:v0.31.0-cu129" \
+      org.storeypath.helper.engine="vllm" \
+      org.storeypath.helper.model="${MODEL}"
+ENTRYPOINT ["storeypath-helper"]
+CMD []

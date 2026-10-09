@@ -1,0 +1,6 @@
+# build context of Dockerfile.vllm: only what its image needs
+*
+!start.sh
+!storeypath_key_guard.py
+!models/vllm/
+models/vllm/**/*.part
