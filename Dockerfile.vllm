@@ -9,10 +9,12 @@
 #   docker build --platform linux/amd64 -f Dockerfile.vllm -t storeypath/gpu-helper:vllm .
 #   docker save storeypath/gpu-helper:vllm | gzip -1 > storeypath-gpu-helper-vllm.tar.gz
 #
-# On the GPU machine (Linux, Docker and the NVIDIA Container Toolkit; an NVIDIA driver
-# 575 or newer, or on a data-center GPU such as an A100 or H100 also the 535, 550, 560,
-# 565 and 570 branches; one GPU, compute capability 8.0 or newer, with about 46 GB free:
-# STOREYPATH_HELPER_GPU_MEMORY, 44 GB by default, and some 2 GB vLLM takes beyond it):
+# On the GPU machine (Linux, Docker and the NVIDIA Container Toolkit; one GPU of compute
+# capability 8.0 or newer, such as an A100, H100, H200, B200, B300 or RTX PRO 6000
+# Blackwell, with about 46 GB free: STOREYPATH_HELPER_GPU_MEMORY, 44 GB by default, and
+# some 2 GB vLLM takes beyond it; an NVIDIA driver 580 or newer, a B300 580.82 or newer,
+# or on a data-center GPU such as an A100, H100, H200 or B200 also the 535 or 570 branch;
+# README.md, Which image, has each GPU):
 #
 #   docker load -i storeypath-gpu-helper-vllm.tar.gz
 #   docker run -d --name storeypath-gpu --gpus '"device=0"' -p 8105:8105 \
@@ -22,11 +24,27 @@
 # <the same key>, STOREYPATH_VISION_PARALLEL=16 (the helper's slots). Its settings
 # (slots, GPU memory, context, the model's name, HTTPS): start.sh.
 #
-# vLLM's image, pinned: vLLM 0.31.0 with PyTorch 2.13 for CUDA 12.9 (its "cu129" build:
-# the plain v0.31.0 tag is CUDA 13.0 and needs driver 580). Its CUDA forward-compatibility
-# libraries stay in: on a data-center GPU whose driver is older than CUDA 12.9's (575),
-# the NVIDIA Container Toolkit puts them to use. torchcodec (video decoding, built for
-# CUDA 13, whose library does not load here) is taken out: still images do not need it.
+# vLLM's image, pinned: vLLM 0.31.0 with PyTorch 2.13 for CUDA 13.0 (its plain v0.31.0
+# tag). It has kernels for each of those GPUs: for Blackwell, vLLM's FP8 matrix kernels
+# are built for the whole family (sm_100f runs on a B200 and a B300, sm_120f on an RTX
+# PRO 6000), and FlashInfer brings its own for sm_100, sm_103 and sm_120. vLLM's CUDA
+# 12.9 build ("cu129") has its Blackwell FP8 kernels for the B200's chip alone (sm_100a),
+# which a B300 (sm_103) cannot run. The CUDA forward-compatibility libraries stay in: on
+# a data-center GPU whose driver is older than CUDA 13.0's (580), the NVIDIA Container
+# Toolkit puts them to use (NVIDIA supports that from the 535 and 570 branches). Other
+# GPUs (RTX PRO, GeForce) have no forward compatibility: their driver must be 580 or
+# newer. For one with an older driver (575 or newer), and any GPU but a B300, build on the
+# CUDA 12.9 image instead: --build-arg VLLM_IMAGE=vllm/vllm-openai:v0.31.0-cu129@sha256:
+# ff29e51a9457f191deb332b96fa6440584fa941aa2a548449b604e2b1e5e1eeb. torchcodec (video
+# decoding) is taken out: still images do not need it, and the CUDA 12.9 image's copy,
+# built for CUDA 13, does not load.
+#
+# Nothing is downloaded at run time: Hugging Face is offline, usage statistics are off,
+# and FlashInfer keeps to the kernels its flashinfer-cubin package brings (with
+# FLASHINFER_NO_DOWNLOAD set, a kernel missing there stops it with a message instead of
+# a fetch from NVIDIA's server). What is compiled as it starts (Triton's kernels,
+# FlashAttention 4 on an H100 or H200, Humming's FP8 kernels on an A100) is compiled on
+# the GPU machine and kept under the helper's home folder.
 #
 # The model, from models/vllm/<MODEL>/ (./fetch-vision.sh fp8): Gemma 4 31B, FP8
 # (RedHatAI/gemma-4-31B-it-FP8-dynamic), served as gemma-4-31B-it-FP8; or, with
@@ -35,12 +53,17 @@
 # model's name: a different model is asked every room again.
 #
 # Inside: vLLM (Apache-2.0), PyTorch (BSD-3-Clause), the other Python packages vLLM's
-# image carries (each with its licence), NVIDIA's CUDA libraries (NVIDIA Deep Learning
-# Container License, as vLLM's image ships them) and the model's weights (Apache-2.0).
-# Licences: /usr/share/storeypath/licenses. SymPoint-V2 is never in this image.
+# image carries (each with its licence: among them the GPU kernels it takes on each GPU,
+# FlashInfer with its prebuilt kernels and Humming, Apache-2.0, and the NVIDIA CUTLASS DSL
+# that compiles FlashAttention 4, under NVIDIA's software licence), NVIDIA's CUDA
+# libraries (NVIDIA Deep Learning Container License, as vLLM's image ships them) and the
+# model's weights (Apache-2.0). Licences: /usr/share/storeypath/licenses. SymPoint-V2 is
+# never in this image.
 
-ARG VLLM_IMAGE=vllm/vllm-openai:v0.31.0-cu129@sha256:ff29e51a9457f191deb332b96fa6440584fa941aa2a548449b604e2b1e5e1eeb
+ARG VLLM_IMAGE=vllm/vllm-openai:v0.31.0@sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3
 FROM ${VLLM_IMAGE}
+# (again inside the stage, for the label below)
+ARG VLLM_IMAGE
 # the folder under models/vllm/ (fetch-vision.sh), which is also the served name
 ARG MODEL=gemma-4-31B-it-FP8
 # how its image processor reads a picture (JSON; {} for the model's own default): Gemma 4
@@ -57,6 +80,8 @@ RUN PIP_ROOT_USER_ACTION=ignore python3 -m pip uninstall -y -q torchcodec \
     && cp "$P"/vllm-*.dist-info/licenses/LICENSE "$L/LICENSE-vllm.txt" \
     && cp "$P"/torch-*.dist-info/licenses/LICENSE "$L/LICENSE-pytorch.txt" \
     && cp /NGC-DL-CONTAINER-LICENSE "$L/LICENSE-NVIDIA-deep-learning-container.txt" \
+    && for f in "$P"/nvidia_cutlass_dsl-*.dist-info/licenses/LICENSE; do \
+       if [ -f "$f" ]; then cp "$f" "$L/LICENSE-NVIDIA-CUTLASS-DSL.txt"; fi; done \
     && case "$MODEL" in \
        gemma-4-*) printf '%s\n' 'Gemma 4 model weights: Apache License 2.0, Google (https://ai.google.dev/gemma/docs/gemma_4_license).' \
                       'FP8 quantization: Red Hat, Apache License 2.0 (https://huggingface.co/RedHatAI/gemma-4-31B-it-FP8-dynamic).' ;; \
@@ -72,6 +97,10 @@ print("their dist-info folders under /usr/local/lib/python3.12/dist-packages.\n"
 rows = set()
 for d in m.distributions():
     lic = d.metadata.get("License-Expression") or (d.metadata.get("License") or "").split("\n")[0][:80]
+    if not lic:
+        # else its licence classifiers, e.g. "Other/Proprietary License"
+        lic = "; ".join(c.split("::")[-1].strip() for c in d.metadata.get_all("Classifier") or []
+                        if c.startswith("License ::"))
     rows.add((d.metadata["Name"] or "?", d.version, lic or "see its dist-info"))
 for name, version, lic in sorted(rows, key=lambda r: r[0].lower()):
     print(f"{name} {version}: {lic}")
@@ -90,6 +119,7 @@ ENV STOREYPATH_HELPER_ENGINE=vllm \
     HF_DATASETS_OFFLINE=1 \
     VLLM_NO_USAGE_STATS=1 \
     DO_NOT_TRACK=1 \
+    FLASHINFER_NO_DOWNLOAD=1 \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
@@ -106,8 +136,8 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15m \
 LABEL org.opencontainers.image.title="StoreyPath GPU helper (vLLM)" \
       org.opencontainers.image.description="The vision model StoreyPath Studio asks about the plans, served by vLLM on an NVIDIA GPU (OpenAI-compatible, with a key)" \
       org.opencontainers.image.source="https://github.com/StoreyPath/storeypath-gpu-helper" \
-      org.opencontainers.image.licenses="Apache-2.0 AND BSD-3-Clause AND LicenseRef-NVIDIA-Deep-Learning-Container-License" \
-      org.opencontainers.image.base.name="docker.io/vllm/vllm-openai:v0.31.0-cu129" \
+      org.opencontainers.image.licenses="Apache-2.0 AND BSD-3-Clause AND LicenseRef-NVIDIA-Deep-Learning-Container-License AND LicenseRef-NVIDIA-CUTLASS-DSL" \
+      org.opencontainers.image.base.name="docker.io/${VLLM_IMAGE}" \
       org.storeypath.helper.engine="vllm" \
       org.storeypath.helper.model="${MODEL}"
 ENTRYPOINT ["storeypath-helper"]

@@ -17,12 +17,32 @@ network. What the key and HTTPS protect, and what they don't: [Security](#securi
 | | **vLLM** (recommended): `Dockerfile.vllm` | **llama.cpp**: `Dockerfile` |
 |---|---|---|
 | Model | Gemma 4 31B, FP8 (8-bit), served as `gemma-4-31B-it-FP8` | Gemma 4 31B, 4-bit (Q4_K_M), served as `gemma-4-31B-it-Q4_K_M` |
-| NVIDIA driver | 575 or newer (CUDA 12.9); on a data-center GPU (A100, H100, L40S…) also the 535, 550, 560, 565 and 570 branches, through the CUDA forward-compatibility libraries inside the image | 525 or newer |
-| GPU | compute capability 8.0 or newer (A100 and newer). FP8 runs natively from 8.9 (L4, L40S, H100, Blackwell); an A100 reads the 8-bit weights through slower kernels | compute capability 8.0 or newer |
+| NVIDIA driver | 580 or newer (CUDA 13.0); a B300 580.82 or newer; on a data-center GPU (A100, H100, H200, B200, L40S…) also the 535 and 570 branches, through the CUDA forward-compatibility libraries inside the image. Each GPU: the table below | 525 or newer |
+| GPU | compute capability 8.0 or newer: A100, H100, H200, B200, B300, RTX PRO 6000 Blackwell and others. FP8 runs natively from 8.9 (L4, L40S, H100, Blackwell); an A100 reads the 8-bit weights through slower kernels | compute capability 8.0 or newer |
 | GPU memory | 44 GB by default (`STOREYPATH_HELPER_GPU_MEMORY`), about 46 GB used in all | about 32 GB with 2 questions at once |
 | Questions at once | 16 (`STOREYPATH_HELPER_SLOTS`) | 2 |
 | Start | about 3 minutes (it compiles for the GPU each time) | a minute or two |
-| Image | about 38 GB to move (`docker save … \| gzip`), about 71 GB once loaded | about 21 GB |
+| Image | about 37 GB to move (`docker save … \| gzip`), about 56 GB once loaded (as `docker images` counts it) | about 21 GB |
+
+The vLLM image is built on vLLM 0.31.0 for CUDA 13.0, which has kernels for each of
+these GPUs. What each one needs and takes, from the kernels inside the image and vLLM's
+own choices for Gemma 4 on it:
+
+| GPU | Compute capability | NVIDIA driver | FP8 | Attention |
+|---|---|---|---|---|
+| A100 | 8.0 | 580 or newer, or 535 or 570 | weight-only: the 8-bit weights are widened as each layer reads them (Humming's kernels, compiled for the GPU as the helper starts; Marlin's next in line), the arithmetic in BF16 | Triton |
+| H100, H200 | 9.0 | 580 or newer, or 535 or 570 (an H200 535.129 or newer) | native FP8 (CUTLASS, Hopper's kernels) | Triton for the steps that read a picture, FlashAttention 4 for the rest |
+| B200 | 10.0 | 580 or newer, or 570 | native FP8 (CUTLASS, Blackwell's family kernels, sm_100f) | Triton for the steps that read a picture, FlashInfer (TensorRT-LLM's kernels) for the rest |
+| B300 | 10.3 | 580.82 or newer (no older driver knows it) | as a B200: the same family kernels run on it | as a B200 (FlashInfer has kernels of its own for it) |
+| RTX PRO 6000 Blackwell | 12.0 | 580 or newer (an RTX PRO card has no forward compatibility) | native FP8 (CUTLASS, sm_120f) | Triton |
+| Others of compute capability 8.0 or newer with about 46 GB (L40S, A40, RTX 6000 Ada…) | 8.6, 8.9 | 580 or newer; a data-center GPU also 535 or 570 | native from 8.9, weight-only below | Triton |
+
+The vision tower (the part of Gemma that looks at the picture) runs on PyTorch's own
+attention on every GPU. The first start on a GPU also compiles kernels for it (Triton's,
+FlashAttention 4's, Humming's) and so takes longer. [smoke-test.sh](#smoke-test) tries an
+image on a GPU. On an RTX PRO or GeForce card whose driver is older than 580, build the
+image on vLLM's CUDA 12.9 build instead ([Build](#build-on-a-connected-machine)): driver
+575 or newer, every GPU above but a B300.
 
 Both read rooms as well as each other; vLLM reads them two to four times faster. Take
 the llama.cpp image where the driver is older than vLLM's CUDA needs, or where the GPU
@@ -56,6 +76,15 @@ Dockerfile has its own build context (`.dockerignore`, `Dockerfile.vllm.dockerig
 only its model is sent to Docker. Building the vLLM image takes a quarter of an hour,
 most of it compressing the model's layer.
 
+For an RTX PRO or GeForce card whose NVIDIA driver is 575 to 579 (they have no forward
+compatibility, and the image's CUDA 13.0 needs 580), build on vLLM's CUDA 12.9 image
+instead. It serves every GPU in the table above but a B300, whose FP8 kernels it lacks:
+
+```sh
+docker build --platform linux/amd64 -f Dockerfile.vllm -t storeypath/gpu-helper:vllm-cu129 \
+    --build-arg VLLM_IMAGE=vllm/vllm-openai:v0.31.0-cu129@sha256:ff29e51a9457f191deb332b96fa6440584fa941aa2a548449b604e2b1e5e1eeb .
+```
+
 The vLLM image can carry Qwen 3.5 27B (FP8) instead of Gemma: `./fetch-vision.sh
 qwen-fp8`, then build with `--build-arg MODEL=Qwen3.5-27B-FP8 --build-arg
 IMAGE_KWARGS={}` (and e.g. `-t storeypath/gpu-helper:vllm-qwen`). It is served as
@@ -87,6 +116,32 @@ others on the machine can see.)
 Choose the card with `--gpus '"device=1"'` (one card: the helper uses the first it
 sees). Until the model is loaded `/health` does not answer 200 (llama.cpp: 503; vLLM:
 nothing listens yet); Studio leaves the helper out until it does.
+
+On a data-center GPU whose driver is older than the image's CUDA (the 535 or 570
+branch), the NVIDIA Container Toolkit puts the image's forward-compatibility libraries to
+use. If yours does not (an older toolkit: the helper stops with an error that the driver
+is too old for its CUDA), add `-e VLLM_ENABLE_CUDA_COMPATIBILITY=1` and vLLM puts them to
+use itself.
+
+### Smoke test
+
+[smoke-test.sh](smoke-test.sh) tries an image on one GPU before Studio uses it: it starts
+the image with no network (`docker run --network none`), waits for `/health`, checks that
+a call without the key is refused, asks one question about a made-up plan through the
+OpenAI API with the key, and checks that the answer comes back as JSON naming the word
+written in it. It prints the GPU, what vLLM chose for it (attention, FP8 kernels), the
+answer and how long each step took, and removes its container.
+
+```sh
+./smoke-test.sh storeypath/gpu-helper:vllm 0                     # the GPU nvidia-smi numbers 0
+./smoke-test.sh storeypath/gpu-helper:vllm nvidia.com/gpu=0      # with the toolkit's CDI
+STOREYPATH_HELPER_GPU_MEMORY=auto ./smoke-test.sh storeypath/gpu-helper:vllm 1   # a GPU others use too
+./smoke-test.sh storeypath/gpu-helper:vllm 0 --linear-backend marlin   # arguments after the GPU go to vLLM
+```
+
+It makes a key of its own for the test unless `STOREYPATH_HELPER_KEY` is set, and never
+prints it. The first start on a GPU compiles kernels for it; it waits up to half an hour
+(`SMOKE_TIMEOUT`, in seconds).
 
 On a GPU other programs share, the vLLM helper takes the memory it is given
 (`STOREYPATH_HELPER_GPU_MEMORY`) and about 2 GB more; that much must be free when it
@@ -182,7 +237,9 @@ Dockerfiles.
 Apache 2.0 ([LICENSE](LICENSE)). Inside the llama.cpp image: llama.cpp (MIT), OpenSSL
 (Apache-2.0), NVIDIA's CUDA runtime and cuBLAS (CUDA Toolkit EULA, redistributable) and
 Gemma 4's weights (Apache-2.0). Inside the vLLM image: vLLM (Apache-2.0), PyTorch
-(BSD-3-Clause), the other Python packages of vLLM's image (each listed with its licence),
-NVIDIA's CUDA libraries as vLLM's image ships them (NVIDIA Deep Learning Container
-License) and the model's weights (Gemma 4 or Qwen 3.5: Apache-2.0). Each image keeps its
-licences in `/usr/share/storeypath/licenses`.
+(BSD-3-Clause), the other Python packages of vLLM's image (each listed with its licence;
+among them the GPU kernels it takes, FlashInfer with its prebuilt kernels and Humming,
+Apache-2.0, and the NVIDIA CUTLASS DSL that compiles FlashAttention 4, under NVIDIA's
+software licence), NVIDIA's CUDA libraries as vLLM's image ships them (NVIDIA Deep
+Learning Container License) and the model's weights (Gemma 4 or Qwen 3.5: Apache-2.0).
+Each image keeps its licences in `/usr/share/storeypath/licenses`.
