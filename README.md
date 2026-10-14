@@ -163,6 +163,39 @@ is about 1,450 tokens (Gemma sees each picture in up to 1,120), so a context of 
 is enough for it where memory is short. The Qwen build at the default 44 GB holds all 16
 at once (its memory per question is far smaller) and used 45.5 GB.
 
+## Moving it to an offline machine
+
+The image holds all it needs: the model, vLLM (or llama.cpp) and the helper. Nothing is
+downloaded when it starts or runs. Prepare it on the machine with internet:
+
+1. Build it ([Build](#build-on-a-connected-machine)).
+2. Try it with no network, on a GPU of that machine: `./smoke-test.sh storeypath/gpu-helper:vllm 0`
+   ([Smoke test](#smoke-test)). When it answers, nothing it needs is outside the image.
+3. Save it, and note the file's checksum to check after the move:
+
+   ```sh
+   docker save storeypath/gpu-helper:vllm | gzip -1 > storeypath-gpu-helper-vllm.tar.gz
+   shasum -a 256 storeypath-gpu-helper-vllm.tar.gz > storeypath-gpu-helper-vllm.tar.gz.sha256
+   ```
+
+On the offline machine, which needs Linux, Docker, the NVIDIA Container Toolkit and the
+driver the image asks for ([Which image](#which-image)):
+
+1. Check the file and load it:
+
+   ```sh
+   shasum -a 256 -c storeypath-gpu-helper-vllm.tar.gz.sha256
+   docker load -i storeypath-gpu-helper-vllm.tar.gz
+   ```
+
+2. Make its key and start it ([Run](#run-on-the-gpu-machine)). Its first start compiles
+   kernels for that GPU, with no network, for 10 to 30 minutes; `/health` answers 200 once
+   it is ready. They are kept with the container: one made again compiles them again.
+
+What the file does not hold: the key (`helper.env`, made on the offline machine, given
+as it starts), its certificate (made as it starts) and anything of Studio's (the helper
+keeps nothing it is asked).
+
 ## Studio
 
 Tell Studio where the helper is: on Studio's *GPU helpers* page (admins), or when
