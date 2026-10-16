@@ -15,10 +15,13 @@
 #
 # The key: STOREYPATH_HELPER_KEY from the environment (at least 32 characters), else one
 # made for the test. It reaches the container by its name only, never on a command line,
-# and is never printed. STOREYPATH_HELPER_GPU_MEMORY, _CONTEXT and _SLOTS go to the helper
-# when set (e.g. STOREYPATH_HELPER_GPU_MEMORY=auto on a GPU others use). SMOKE_TIMEOUT:
+# and is never printed. STOREYPATH_HELPER_MODEL, _GPU_MEMORY, _CONTEXT and _SLOTS go to the
+# helper when set (e.g. STOREYPATH_HELPER_GPU_MEMORY=auto on a GPU others use, or 22 to try
+# the small copy as a 24 GB card would take it). SMOKE_TIMEOUT:
 # seconds to wait for /health (default 1800: a first start compiles kernels for the GPU).
 # SMOKE_KEEP=1 leaves the container running afterwards (its name is printed).
+# SMOKE_DOCKER_ARGS: more options for docker run, e.g. "--cpuset-cpus 0-31 --memory 64g" on
+# a machine that is busy with other work.
 #
 # It prints the GPU, what vLLM chose for it (attention backends, the FP8 kernel) and the
 # answer, and exits 0 when the answer is JSON naming the word written in the picture.
@@ -56,7 +59,7 @@ case "$gpu" in
 esac
 # the helper's settings that are set here, passed by name
 settings=
-for v in STOREYPATH_HELPER_GPU_MEMORY STOREYPATH_HELPER_CONTEXT STOREYPATH_HELPER_SLOTS; do
+for v in STOREYPATH_HELPER_MODEL STOREYPATH_HELPER_GPU_MEMORY STOREYPATH_HELPER_CONTEXT STOREYPATH_HELPER_SLOTS; do
     if eval "[ -n \"\${$v:-}\" ]"; then
         settings="$settings -e $v"
     fi
@@ -75,8 +78,8 @@ trap 'exit 1' INT TERM
 
 started="$(date +%s)"
 echo "starting $image on GPU $gpu, no network, as $name"
-# shellcheck disable=SC2086 # $settings: -e and variable names, split as words
-docker run -d --name "$name" --network none "$gpu_flag" "$gpu_value" $settings -e STOREYPATH_HELPER_KEY \
+# shellcheck disable=SC2086 # $settings, $SMOKE_DOCKER_ARGS: options, split as words
+docker run -d --name "$name" --network none "$gpu_flag" "$gpu_value" ${SMOKE_DOCKER_ARGS:-} $settings -e STOREYPATH_HELPER_KEY \
     "$image" "$@" >/dev/null
 
 # /health: nothing answers while the model loads and compiles, then 200
@@ -101,9 +104,9 @@ echo "ready after $((ready - started)) s"
 gpu_info="$(docker exec "$name" nvidia-smi --query-gpu=name,compute_cap,driver_version --format=csv,noheader 2>/dev/null)" \
     || gpu_info="unknown (no nvidia-smi in the container)"
 echo "GPU (name, compute capability, driver): $gpu_info"
-echo "what vLLM chose here (from its log):"
-docker logs "$name" 2>&1 | grep -iE "attention backend|vit attention|heterogeneous head|FlashAttention|Selected [A-Za-z0-9]+Kernel|weight-only|marlin|humming|cutlass" \
-    | sed -E 's/^.*\] //' | cut -c1-200 | sort -u | sed 's/^/  /' || true
+echo "what the helper and vLLM chose here (from their log):"
+docker logs "$name" 2>&1 | grep -iE "^serving |attention backend|vit attention|heterogeneous head|FlashAttention|Selected [A-Za-z0-9]+Kernel|weight-only|marlin|machete|humming|cutlass|GPU KV cache size" \
+    | sed -E 's/^.*\] //' | cut -c1-320 | sort -u | sed 's/^/  /' || true
 
 # the question, from inside the container: the key from its environment, which docker
 # run gave it by name (the helper's own process drops it; docker exec still has it)
