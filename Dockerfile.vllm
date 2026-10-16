@@ -1,19 +1,25 @@
 # StoreyPath's GPU helper, vLLM build: the vision model alone, served on a machine with
 # an NVIDIA GPU by vLLM, the faster of the helper's two engines (the other, llama.cpp,
-# is the Dockerfile beside this one: for older drivers and less memory). The same
-# contract: the OpenAI-compatible API on port 8105, every call but /health needing the
-# key, HTTPS (with a certificate of its own unless given one), the model baked in and
-# no network at run time.
+# is the Dockerfile beside this one: for older drivers). The same contract: the
+# OpenAI-compatible API on port 8105, every call but /health needing the key, HTTPS (with
+# a certificate of its own unless given one), the model baked in and no network at run
+# time.
 #
-#   ./fetch-vision.sh fp8                                          # once, before building
+#   ./fetch-vision.sh vllm                                         # once, before building
 #   docker build --platform linux/amd64 -f Dockerfile.vllm -t storeypath/gpu-helper:vllm .
 #   docker save storeypath/gpu-helper:vllm | gzip -1 > storeypath-gpu-helper-vllm.tar.gz
 #
+# It carries Gemma 4 31B twice: the full copy, in FP8 (about 46 GB of GPU memory), and a
+# small one, in 4 bits (about 23 GB), for a card of 24 or 32 GB such as an RTX 4090 or
+# 5090. start.sh takes the full copy where the GPU memory the helper may use holds it (41 GB
+# or more: STOREYPATH_HELPER_GPU_MEMORY, else what is free on the card less 2 GB), else
+# the small one; STOREYPATH_HELPER_MODEL=full or small takes that one. Each is served under
+# its own name, as Studio files answers by it.
+#
 # On the GPU machine (Linux, Docker and the NVIDIA Container Toolkit; one GPU of compute
-# capability 8.0 or newer, such as an A100, H100, H200, B200, B300 or RTX PRO 6000
-# Blackwell, with about 46 GB free: STOREYPATH_HELPER_GPU_MEMORY, 44 GB by default, and
-# some 2 GB vLLM takes beyond it; an NVIDIA driver 580 or newer, a B300 580.82 or newer,
-# or on a data-center GPU such as an A100, H100, H200 or B200 also the 535 or 570 branch;
+# capability 8.0 or newer, such as an RTX 4090, RTX 5090, RTX PRO 6000 Blackwell, A100,
+# H100, H200, B200 or B300; an NVIDIA driver 580 or newer, a B300 580.82 or newer, or on a
+# data-center GPU such as an A100, H100, H200 or B200 also the 535 or 570 branch;
 # README.md, Which image, has each GPU):
 #
 #   docker load -i storeypath-gpu-helper-vllm.tar.gz
@@ -22,17 +28,20 @@
 #
 # and Studio: STOREYPATH_VISION_URL=https://<gpu machine>:8105/v1, STOREYPATH_VISION_KEY=
 # <the same key>, STOREYPATH_VISION_PARALLEL=16 (the helper's slots). Its settings
-# (slots, GPU memory, context, the model's name, HTTPS): start.sh.
+# (slots, GPU memory, context, the model and its name, HTTPS): start.sh.
 #
 # vLLM's image, pinned: vLLM 0.31.0 with PyTorch 2.13 for CUDA 13.0 (its plain v0.31.0
 # tag). It has kernels for each of those GPUs: for Blackwell, vLLM's FP8 matrix kernels
 # are built for the whole family (sm_100f runs on a B200 and a B300, sm_120f on an RTX
-# PRO 6000), and FlashInfer brings its own for sm_100, sm_103 and sm_120. vLLM's CUDA
-# 12.9 build ("cu129") has its Blackwell FP8 kernels for the B200's chip alone (sm_100a),
-# which a B300 (sm_103) cannot run. The CUDA forward-compatibility libraries stay in: on
-# a data-center GPU whose driver is older than CUDA 13.0's (580), the NVIDIA Container
-# Toolkit puts them to use (NVIDIA supports that from the 535 and 570 branches). Other
-# GPUs (RTX PRO, GeForce) have no forward compatibility: their driver must be 580 or
+# 5090 and an RTX PRO 6000), and FlashInfer brings its own for sm_100, sm_103 and sm_120;
+# an RTX 4090 (sm_89) has CUTLASS's FP8 kernels of its own. The small copy's 4-bit weights
+# are read by Marlin's kernels (built for sm_75, sm_80, sm_89, sm_90 and sm_120, and as PTX
+# that the driver compiles for a B200 or B300), on an H100 or H200 by Machete's (sm_90a).
+# vLLM's CUDA 12.9 build ("cu129") has its Blackwell FP8 kernels for the B200's chip alone
+# (sm_100a), which a B300 (sm_103) cannot run. The CUDA forward-compatibility libraries
+# stay in: on a data-center GPU whose driver is older than CUDA 13.0's (580), the NVIDIA
+# Container Toolkit puts them to use (NVIDIA supports that from the 535 and 570 branches).
+# Other GPUs (GeForce, RTX PRO) have no forward compatibility: their driver must be 580 or
 # newer. For one with an older driver (575 or newer), and any GPU but a B300, build on the
 # CUDA 12.9 image instead: --build-arg VLLM_IMAGE=vllm/vllm-openai:v0.31.0-cu129@sha256:
 # ff29e51a9457f191deb332b96fa6440584fa941aa2a548449b604e2b1e5e1eeb. torchcodec (video
@@ -46,10 +55,12 @@
 # FlashAttention 4 on an H100 or H200, Humming's FP8 kernels on an A100) is compiled on
 # the GPU machine and kept under the helper's home folder.
 #
-# The model, from models/vllm/<MODEL>/ (./fetch-vision.sh fp8): Gemma 4 31B, FP8
-# (RedHatAI/gemma-4-31B-it-FP8-dynamic), served as gemma-4-31B-it-FP8; or, with
-# --build-arg MODEL=Qwen3.5-27B-FP8 --build-arg IMAGE_KWARGS={} (./fetch-vision.sh
-# qwen-fp8), Qwen 3.5 27B, FP8, served as Qwen3.5-27B-FP8. Studio files answers by the
+# The models, from models/vllm/<MODEL>/ and models/vllm/<SMALL_MODEL>/ (./fetch-vision.sh
+# vllm): the full copy, Gemma 4 31B in FP8 (RedHatAI/gemma-4-31B-it-FP8-dynamic), served
+# as gemma-4-31B-it-FP8, and the small one, Gemma 4 31B in 4 bits (Intel/gemma-4-31B-it-
+# int4-AutoRound), served as gemma-4-31B-it-int4-AutoRound. Or, as the full copy, with
+# --build-arg MODEL=Qwen3.5-27B-FP8 (./fetch-vision.sh qwen-fp8), Qwen 3.5 27B, FP8,
+# served as Qwen3.5-27B-FP8 (the small copy stays Gemma's). Studio files answers by the
 # model's name: a different model is asked every room again.
 #
 # Inside: vLLM (Apache-2.0), PyTorch (BSD-3-Clause), the other Python packages vLLM's
@@ -57,21 +68,22 @@
 # FlashInfer with its prebuilt kernels and Humming, Apache-2.0, and the NVIDIA CUTLASS DSL
 # that compiles FlashAttention 4, under NVIDIA's software licence), NVIDIA's CUDA
 # libraries (NVIDIA Deep Learning Container License, as vLLM's image ships them) and the
-# model's weights (Apache-2.0). Licences: /usr/share/storeypath/licenses. SymPoint-V2 is
-# never in this image.
+# models' weights (Gemma 4: Apache-2.0, and so its FP8 and 4-bit copies; Qwen 3.5:
+# Apache-2.0). Licences: /usr/share/storeypath/licenses. SymPoint-V2 is never in this
+# image.
 
 ARG VLLM_IMAGE=vllm/vllm-openai:v0.31.0@sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3
 FROM ${VLLM_IMAGE}
 # (again inside the stage, for the label below)
 ARG VLLM_IMAGE
-# the folder under models/vllm/ (fetch-vision.sh), which is also the served name
+# the folders under models/vllm/ (fetch-vision.sh), which are also the served names: the
+# full copy and the small one
 ARG MODEL=gemma-4-31B-it-FP8
-# how its image processor reads a picture (JSON; {} for the model's own default): Gemma 4
-# with up to 1120 tokens a picture, as measured (its default, 280, is coarse for a plan)
-ARG IMAGE_KWARGS='{"max_soft_tokens":1120}'
+ARG SMALL_MODEL=gemma-4-31B-it-int4-AutoRound
 
-# the model first: the largest layer, kept in the build cache while what follows changes
+# the models first: the largest layers, kept in the build cache while what follows changes
 COPY models/vllm/${MODEL}/ /opt/storeypath/vision/${MODEL}/
+COPY models/vllm/${SMALL_MODEL}/ /opt/storeypath/vision/${SMALL_MODEL}/
 
 RUN PIP_ROOT_USER_ACTION=ignore python3 -m pip uninstall -y -q torchcodec \
     && useradd --system --uid 10001 --create-home --home-dir /home/helper helper \
@@ -88,6 +100,11 @@ RUN PIP_ROOT_USER_ACTION=ignore python3 -m pip uninstall -y -q torchcodec \
        Qwen3.5-*) printf '%s\n' 'Qwen 3.5 model weights: Apache License 2.0, the Qwen team, Alibaba Cloud (https://huggingface.co/Qwen/Qwen3.5-27B-FP8).' ;; \
        *) printf '%s\n' "The model's licence: its card, /opt/storeypath/vision/$MODEL/README.md" ;; \
        esac > "$L/LICENSE-vision-model.txt" \
+    && case "$SMALL_MODEL" in \
+       gemma-4-31B-it-int4-AutoRound) printf '%s\n' 'The small copy: Gemma 4 model weights, Apache License 2.0, Google (https://ai.google.dev/gemma/docs/gemma_4_license).' \
+                      '4-bit quantization (AutoRound): Intel, under the licence of the original model (https://huggingface.co/Intel/gemma-4-31B-it-int4-AutoRound).' ;; \
+       *) printf '%s\n' "The small copy's licence: its card, /opt/storeypath/vision/$SMALL_MODEL/README.md" ;; \
+       esac >> "$L/LICENSE-vision-model.txt" \
     && if [ -f "/opt/storeypath/vision/$MODEL/LICENSE" ]; then cp "/opt/storeypath/vision/$MODEL/LICENSE" "$L/LICENSE-vision-model-full.txt"; fi
 # the Python packages vLLM's image carries, each with its version and licence
 RUN python3 - > /usr/share/storeypath/licenses/python-packages.txt <<'EOF'
@@ -110,8 +127,9 @@ COPY storeypath_key_guard.py /opt/storeypath/python/
 COPY start.sh /usr/local/bin/storeypath-helper
 
 ENV STOREYPATH_HELPER_ENGINE=vllm \
-    STOREYPATH_HELPER_MODEL=/opt/storeypath/vision/${MODEL} \
-    STOREYPATH_HELPER_IMAGE_KWARGS="${IMAGE_KWARGS}" \
+    STOREYPATH_HELPER_MODEL=auto \
+    STOREYPATH_HELPER_FULL=/opt/storeypath/vision/${MODEL} \
+    STOREYPATH_HELPER_SMALL=/opt/storeypath/vision/${SMALL_MODEL} \
     PYTHONPATH=/opt/storeypath/python \
     HOME=/home/helper \
     HF_HUB_OFFLINE=1 \
@@ -126,8 +144,8 @@ ENV STOREYPATH_HELPER_ENGINE=vllm \
 USER helper
 WORKDIR /home/helper
 EXPOSE 8105
-# /health needs no key; nothing answers while the model loads and compiles (three or
-# four minutes), then 200. Asked on the scheme start.sh served (it notes it in a file),
+# /health needs no key; nothing answers while the model loads and compiles (two to four
+# minutes), then 200. Asked on the scheme start.sh served (it notes it in a file),
 # else on HTTPS then HTTP
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15m \
     CMD scheme="$(cat "${TMPDIR:-/tmp}/storeypath-helper.scheme" 2>/dev/null)"; \
@@ -139,6 +157,7 @@ LABEL org.opencontainers.image.title="StoreyPath GPU helper (vLLM)" \
       org.opencontainers.image.licenses="Apache-2.0 AND BSD-3-Clause AND LicenseRef-NVIDIA-Deep-Learning-Container-License AND LicenseRef-NVIDIA-CUTLASS-DSL" \
       org.opencontainers.image.base.name="docker.io/${VLLM_IMAGE}" \
       org.storeypath.helper.engine="vllm" \
-      org.storeypath.helper.model="${MODEL}"
+      org.storeypath.helper.model="${MODEL}" \
+      org.storeypath.helper.small-model="${SMALL_MODEL}"
 ENTRYPOINT ["storeypath-helper"]
 CMD []

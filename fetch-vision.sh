@@ -5,11 +5,14 @@
 #   ./fetch-vision.sh [gguf]   for the llama.cpp image (Dockerfile): Gemma 4 31B, 4-bit
 #                              (about 18 GB), and its image encoder (about 1 GB), into
 #                              models/vision/
-#   ./fetch-vision.sh fp8      for the vLLM image (Dockerfile.vllm): Gemma 4 31B, FP8
-#                              (about 33 GB), into models/vllm/gemma-4-31B-it-FP8/
+#   ./fetch-vision.sh vllm     for the vLLM image (Dockerfile.vllm): fp8 and small, both
+#   ./fetch-vision.sh fp8      the vLLM image's full copy: Gemma 4 31B, FP8 (about 33 GB),
+#                              into models/vllm/gemma-4-31B-it-FP8/
+#   ./fetch-vision.sh small    its small copy, for a 24 or 32 GB card: Gemma 4 31B, 4-bit
+#                              (about 19 GB), into models/vllm/gemma-4-31B-it-int4-AutoRound/
 #   ./fetch-vision.sh qwen-fp8 for the vLLM image built with MODEL=Qwen3.5-27B-FP8: Qwen
 #                              3.5 27B, FP8 (about 29 GB), into models/vllm/Qwen3.5-27B-FP8/
-#   ./fetch-vision.sh all      all three
+#   ./fetch-vision.sh all      all four
 #
 # models/ is git-ignored. Building an image needs its model there; running it needs no
 # network at all. Downloaded files are kept (a second run fetches only what is missing)
@@ -69,6 +72,35 @@ fp8() {
   du -sh .
 }
 
+# Intel's 4-bit quantization (AutoRound: weights in 4 bits, groups of 128, symmetric) of
+# Google's Gemma 4 31B, the vLLM image's small copy (the model card and every file vLLM
+# reads)
+small() {
+  into vllm/gemma-4-31B-it-int4-AutoRound
+  REPO=https://huggingface.co/Intel/gemma-4-31B-it-int4-AutoRound/resolve/a428c96a57976947b0f12735f0cf5fcae69019ad
+  fetch README.md f298dd034e12c98f39a899550cb4275f7d3a9b25e345f33fd17fc5ff3f2c2f4c
+  fetch chat_template.jinja 94899c0f917d93f6fe81c95744d1e8ddab2d21d39228d2e4aec1fb2a25bff413
+  fetch config.json 78cdb2f75becbaede809c8ca3343b5ff2272228e1c3ae8a5f685e8cf7502de58
+  fetch generation_config.json 5439541d3bf0ba9ade7c1122dc14703f85f32a520150351b344b14f48c574cc2
+  fetch model-00001-of-00010.safetensors 7e24723fd6ff1ca0d9353250cd51b6dcdb3115642d75b2d8fb038faaa846d297
+  fetch model-00002-of-00010.safetensors b41ee5f945606e248d960ee491938f7c815a27622d5df3404d2ffb3a93f317c8
+  fetch model-00003-of-00010.safetensors a58891669d91061814c78d08801ea5aeaa6314efa37a689cde80cbdaf50b6e63
+  fetch model-00004-of-00010.safetensors 01b48b65c0753012f5d017bff8c47679a8e7e589b03a170a408007a5550099cb
+  fetch model-00005-of-00010.safetensors 2ba67faad94d16c78c482483ab7ae4cc6c0da421cf558c488241ee5e1051e8b3
+  fetch model-00006-of-00010.safetensors e31180b0b158b353013b73b2ab53c73579ddf6ff7349a9e89ecd1b413333e899
+  fetch model-00007-of-00010.safetensors 9fe1196b1a26b8e303e7f0018e38fef9d246a2d4aab1140a045b4186c53c6ba0
+  fetch model-00008-of-00010.safetensors 058e8f76ff6deb9555185d7f5d418abf7bce2dc8b54fe3a4025f488954c78db9
+  fetch model-00009-of-00010.safetensors e69b0f2fde65d2f57f22d2f845f9b50db3702670e64e48e183914a8448a96ecf
+  fetch model-00010-of-00010.safetensors 384859d45822c8952be2263defe16675b2dc79be3ef2279066bbd21b5dfff239
+  fetch model.safetensors.index.json 3a3c977ba2ece87c7049e3d275ffe5ffac05136a26f0730489cb83b52caf3ec4
+  fetch preprocessor_config.json 12476d626b89e273a9b2c6a493a6319ab02427ebfcd3635d92b29584b27c7249
+  fetch processor_config.json 32bdf45d2ad4cc29a0822ddd157a182de76644f0419a6228d151495256e9813c
+  fetch quantization_config.json a276d08cad7a8d7f15ce80c4392489d7cdaa2bd88d6ed00d82ed3441529c7b1a
+  fetch tokenizer.json cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f
+  fetch tokenizer_config.json b9686f02a0bb2d5de25e5bed7949d5858109e62cbb1111ce4cea731885e779e9
+  du -sh .
+}
+
 # the Qwen team's own FP8 of Qwen 3.5 27B
 qwen_fp8() {
   into vllm/Qwen3.5-27B-FP8
@@ -102,11 +134,13 @@ qwen_fp8() {
 
 case "${1:-gguf}" in
 gguf) gguf ;;
+vllm) (fp8) && (small) ;;
 fp8) fp8 ;;
+small) small ;;
 qwen-fp8) qwen_fp8 ;;
-all) (gguf) && (fp8) && (qwen_fp8) ;;
+all) (gguf) && (fp8) && (small) && (qwen_fp8) ;;
 *)
-  echo "usage: $0 [gguf|fp8|qwen-fp8|all]: the model of the llama.cpp image (gguf, the default), of the vLLM image (fp8), the vLLM image's other choice (qwen-fp8), or all three" >&2
+  echo "usage: $0 [gguf|vllm|fp8|small|qwen-fp8|all]: the model of the llama.cpp image (gguf, the default), the vLLM image's two copies (vllm: fp8 and small), its other choice (qwen-fp8), or all four" >&2
   exit 2
   ;;
 esac
