@@ -48,10 +48,13 @@ Tried on an RTX PRO 6000 Blackwell (compute capability 12.0, driver 580, CUDA 13
 images, `vllm` and `vllm-cu129`, each copy, with no network (`docker run --network none`),
 through HTTPS with the key, and Studio's room question on real plans; and the copy each
 card takes by itself, with the card's free memory brought down to an RTX 4090's and an RTX
-5090's (about 23.5 and 31.4 GB) by another program holding the rest. That stands in for an
-RTX 5090, which has the same architecture (12.0). It does not for an RTX 4090 (8.9), an
-H100 or H200 (9.0) or a B300 (10.3), which were not to hand: for them the table below is
-read from the image and from vLLM's own choices. The full copy has served Studio on an
+5090's (about 23.5 and 31.4 GB) by another program holding the rest. And on an RTX 5090
+itself (32 GB, driver 595, Ubuntu 26.04), offline: it took the small copy by itself (30.9
+GB free: 16 questions at once, 8192 tokens each, Marlin's 4-bit kernels), was ready in
+under two minutes and answered in 1.5 s; asked for the full copy, it said it needs about
+43 GB free and did not start. An RTX 4090 (8.9), an H100 or H200 (9.0) and a B300 (10.3)
+were not to hand: for them the table below is read from the image and from vLLM's own
+choices. The full copy has served Studio on an
 H100 before, on the CUDA 12.9 build of an earlier version of this image.
 
 ### The kernels each GPU runs
