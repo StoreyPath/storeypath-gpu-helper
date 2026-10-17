@@ -52,9 +52,12 @@ card takes by itself, with the card's free memory brought down to an RTX 4090's 
 itself (32 GB, driver 595, Ubuntu 26.04), offline: it took the small copy by itself (30.9
 GB free: 16 questions at once, 8192 tokens each, Marlin's 4-bit kernels), was ready in
 under two minutes and answered in 1.5 s; asked for the full copy, it said it needs about
-43 GB free and did not start. An RTX 4090 (8.9), an H100 or H200 (9.0) and a B300 (10.3)
-were not to hand: for them the table below is read from the image and from vLLM's own
-choices. The full copy has served Studio on an
+43 GB free and did not start. And on an H100 (80 GB, driver 580, sharing its GPU with
+others), offline: the full copy, given 44 GB, on CUTLASS's FP8 kernels and FlashAttention
+4, answered in 0.7 s once ready (about four minutes the first time, FlashAttention's
+kernels compiled once); the small copy, chosen by hand, on Machete's 4-bit kernels and its
+8-bit cache, also in 0.7 s. An RTX 4090 (8.9) and a B300 (10.3) were not to hand: for
+them the table below is read from the image and from vLLM's own choices. The full copy has served Studio on an
 H100 before, on the CUDA 12.9 build of an earlier version of this image.
 
 ### The kernels each GPU runs
